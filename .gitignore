@@ -1,0 +1,4 @@
+/target
+*.asm
+# temporarily ignored
+/test

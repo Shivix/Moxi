@@ -1,0 +1,48 @@
+[package]
+authors = ["Shivix"]
+categories = ["command-line-interface", "command-line-utilities", "development-tools"]
+description = "A modular and extensible debugger"
+edition = "2021"
+exclude = [
+    ".gitignore",
+    "LICENSE",
+]
+homepage = "https://github.com/Shivix/moxi"
+keywords = [
+    "debug",
+    "debugger",
+    "cli",
+    "tool",
+    "utility",
+]
+license = "GPL-3.0-only"
+name = "moxi"
+repository = "https://github.com/Shivix/moxi"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# How do I make sure not all binaries get all dependencies?
+[dependencies]
+addr2line = "0.20.0"
+anyhow = "1.0.71"
+clap = "4.3.1"
+goblin = "0.6.1"
+memmap2 = "0.5.10"
+nix = "0.26.2"
+
+[[bin]]
+name = "moxi_init"
+path = "src/init.rs"
+[[bin]]
+name = "moxid"
+path = "src/daemon.rs"
+[[bin]]
+name = "moxi_start"
+path = "src/start.rs"
+[[bin]]
+name = "moxi_breakpoint"
+path = "src/breakpoint.rs"
+[[bin]]
+name = "moxi_step"
+path = "src/step.rs"
