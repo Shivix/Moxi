@@ -20,7 +20,7 @@ fn main() -> Result<()> {
                 .help("Prevents the process from automatically setting a breakpoint on main and continueing."),
     );
     let stream = TcpStream::connect("localhost:44500")?;
-    let mut writer = Writer::new(stream, cmd.get_name());
+    let mut writer = Writer::new(&stream, cmd.get_name());
     let args = cmd.get_matches();
     let executable_path = args.get_one::<String>("binary").unwrap();
     // TODO: turn relative paths into absolute paths for Daemon.

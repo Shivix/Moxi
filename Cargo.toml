@@ -46,3 +46,6 @@ path = "src/breakpoint.rs"
 [[bin]]
 name = "moxi_step"
 path = "src/step.rs"
+[[bin]]
+name = "moxi_source"
+path = "src/source.rs"

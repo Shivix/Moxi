@@ -18,9 +18,9 @@ pub fn make_command() -> Command {
 fn main() -> Result<()> {
     let cmd = make_command();
     let stream = TcpStream::connect("localhost:44500")?;
-    let mut writer = Writer::new(stream, cmd.get_name());
+    let mut writer = Writer::new(&stream, cmd.get_name());
     let args = cmd.get_matches();
-    let movement = args.get_one::<String>("movement").unwrap();
+    let movement = args.get_one::<&str>("movement").unwrap_or(&"1");
     // If number step that many times
     // If continue continue
     // If out step out

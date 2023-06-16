@@ -1,4 +1,4 @@
-use std::{ffi::c_void, fs, io::{BufRead, BufReader}, process::Command, rc::Rc, borrow::Cow, path::Path, collections::HashMap, net::TcpListener};
+use std::{ffi::c_void, fs, io::{BufRead, Write}, process::Command, rc::Rc, borrow::Cow, path::Path, collections::HashMap, net::TcpListener};
 
 use anyhow::{Result, anyhow};
 
@@ -9,7 +9,7 @@ use nix::sys::{
 };
 use nix::{sys::signal::Signal, unistd::Pid};
 
-use addr2line::{object::{Object, SymbolMapName, SymbolMap}, gimli::DW_LANG_C_plus_plus};
+use addr2line::{object::{Object, SymbolMapName, SymbolMap}, gimli::DW_LANG_C_plus_plus, Location};
 use addr2line::{
     self,
     gimli::{EndianReader, RunTimeEndian},
@@ -27,9 +27,9 @@ fn make_command() -> clap::Command {
         .version(env!("CARGO_PKG_VERSION"))
 }
 
-fn get_source_line(address: u64, context: &Context<EndianReader<RunTimeEndian, Rc<[u8]>>>) {
+fn get_source_line(address: u64, context: &Context<EndianReader<RunTimeEndian, Rc<[u8]>>>) -> Option<Location> {
     let Some(location) = context.find_location(address).unwrap() else {
-        return;
+        return None;
     };
 
     if let Some(file) = location.file {
@@ -38,6 +38,7 @@ fn get_source_line(address: u64, context: &Context<EndianReader<RunTimeEndian, R
     if let Some(line) = location.line {
         println!("Line: {:?}", line);
     }
+    Some(location)
 }
 
 fn binary_base_address(child: Pid) -> Vec<(u64, u64)> {
@@ -129,6 +130,17 @@ fn do_breakpoint(debuggee: &Debuggee, symbol: String, breakpoints: &mut Breakpoi
     Ok(())
 }
 
+fn do_source(debuggee: &Debuggee, writer: &mut Writer) -> Result<()> {
+    let registers = ptrace::getregs(debuggee.pid)?;
+    if let Some(location) = get_source_line(registers.rip, &debuggee.context) {
+        // TODO: Improve error handling here.
+        println!("test2");
+        writer.write(format!("{}:{}\n", location.file.unwrap(), location.line.unwrap()).as_bytes())?;
+        println!("test3");
+    }
+    Ok(())
+}
+
 fn do_step(debuggee: &Debuggee, movement: String) -> Result<()> {
     println!("do_step");
     let steps = if let Ok(steps) = movement.parse::<i32>() {
@@ -162,7 +174,7 @@ fn step(pid: Pid) -> Result<u64> {
 fn main() -> Result<()> {
     let listener = TcpListener::bind("localhost:44500")?;
     let stream = listener.accept()?.0;
-    let mut reader = Reader::new(stream);
+    let mut reader = Reader::new(&stream);
     let executable_path;
     
     loop {
@@ -229,12 +241,16 @@ fn main() -> Result<()> {
 
     loop {
         let stream = listener.accept()?.0;
-        let mut reader = Reader::new(stream);
-        let (command, message) = reader.read()?;
+        let mut reader = Reader::new(&stream);
+        let mut writer = Writer::new(&stream, "daemon");
+        println!("test6");
+        let (command, body) = reader.read()?;
+        println!("test5");
         match command {
-            Cmd::Breakpoint => do_breakpoint(&debuggee, message, &mut breakpoints)?,
+            Cmd::Breakpoint => do_breakpoint(&debuggee, body, &mut breakpoints)?,
+            Cmd::Source => do_source(&debuggee, &mut writer)?,
             Cmd::Start => todo!(),
-            Cmd::Step => do_step(&debuggee, message)?,
+            Cmd::Step => do_step(&debuggee, body)?,
             _ => break,
         };
     }

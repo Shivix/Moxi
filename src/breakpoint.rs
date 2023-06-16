@@ -18,7 +18,7 @@ fn make_command() -> Command {
 fn main() -> Result<()> {
     let cmd = make_command();
     let stream = TcpStream::connect("localhost:44500")?;
-    let mut writer = Writer::new(stream, cmd.get_name());
+    let mut writer = Writer::new(&stream, cmd.get_name());
     let args = cmd.get_matches();
     let executable_path = args.get_one::<String>("binary").unwrap();
     writer.write(executable_path.as_bytes())?;
