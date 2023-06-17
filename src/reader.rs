@@ -1,7 +1,7 @@
-use std::io::{BufReader, BufRead};
+use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 
 pub struct Reader {
     reader: BufReader<TcpStream>,
@@ -23,7 +23,7 @@ fn str_to_cmd(input: &str) -> Result<Cmd> {
         "source" => Cmd::Source,
         "start" => Cmd::Start,
         "step" => Cmd::Step,
-        _ => return Err(anyhow!("failed to parse command name"))
+        _ => return Err(anyhow!("failed to parse command name")),
     })
 }
 
@@ -40,7 +40,9 @@ impl Reader {
             todo!();
         }
         let buffer = String::from_utf8_lossy(&buffer[..buffer.len() - 1]);
-        let (command, message) = buffer.split_once('\u{0001}').expect("SOH delimiter not found");
+        let (command, message) = buffer
+            .split_once('\u{0001}')
+            .expect("SOH delimiter not found");
         let command = str_to_cmd(command)?;
         Ok((command, String::from(message)))
     }

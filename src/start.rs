@@ -1,5 +1,5 @@
-use std::net::TcpStream;
 use anyhow::Result;
+use std::net::TcpStream;
 
 mod writer;
 use writer::Writer;
@@ -10,15 +10,10 @@ fn main() -> Result<()> {
     let cmd = Command::new("start")
         .about("start a process to be debugged")
         .version(env!("CARGO_PKG_VERSION"))
-        .arg(Arg::new("binary").help(
-            "The binary file to attach and debug",
-        ))
-        .arg(
-            Arg::new("main")
-                .long("no-main")
-                .short('m')
-                .help("Prevents the process from automatically setting a breakpoint on main and continueing."),
-    );
+        .arg(Arg::new("binary").help("The binary file to attach and debug"))
+        .arg(Arg::new("main").long("no-main").short('m').help(
+            "Prevents the process from automatically setting a breakpoint on main and continueing.",
+        ));
     let stream = TcpStream::connect("localhost:44500")?;
     let mut writer = Writer::new(&stream, cmd.get_name());
     let args = cmd.get_matches();

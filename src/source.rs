@@ -1,5 +1,5 @@
-use std::net::TcpStream;
 use anyhow::Result;
+use std::net::TcpStream;
 
 mod writer;
 use writer::Writer;

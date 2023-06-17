@@ -1,5 +1,5 @@
+use anyhow::{anyhow, Result};
 use std::net::TcpStream;
-use anyhow::{Result, anyhow};
 
 mod writer;
 use writer::Writer;
@@ -20,7 +20,8 @@ fn main() -> Result<()> {
     let stream = TcpStream::connect("localhost:44500")?;
     let mut writer = Writer::new(&stream, cmd.get_name());
     let args = cmd.get_matches();
-    let movement = args.get_one::<&str>("movement").unwrap_or(&"1");
+    let default = String::from("1");
+    let movement = args.get_one::<String>("movement").unwrap_or(&default);
     // If number step that many times
     // If continue continue
     // If out step out

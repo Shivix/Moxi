@@ -1,6 +1,9 @@
-use std::{ffi::c_void, fs, io::{BufRead, Write}, process::Command, rc::Rc, borrow::Cow, path::Path, collections::HashMap, net::TcpListener};
+use std::{
+    borrow::Cow, collections::HashMap, ffi::c_void, fs, io::BufRead, net::TcpListener, path::Path,
+    process::Command, rc::Rc,
+};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 
 use goblin::elf::Elf;
 use nix::sys::{
@@ -9,17 +12,21 @@ use nix::sys::{
 };
 use nix::{sys::signal::Signal, unistd::Pid};
 
-use addr2line::{object::{Object, SymbolMapName, SymbolMap}, gimli::DW_LANG_C_plus_plus, Location};
 use addr2line::{
     self,
     gimli::{EndianReader, RunTimeEndian},
     Context,
 };
+use addr2line::{
+    gimli::DW_LANG_C_plus_plus,
+    object::{Object, SymbolMap, SymbolMapName},
+    Location,
+};
 
 mod writer;
 use writer::Writer;
 mod reader;
-use reader::{Reader, Cmd};
+use reader::{Cmd, Reader};
 
 fn make_command() -> clap::Command {
     clap::Command::new("moxid")
@@ -27,7 +34,10 @@ fn make_command() -> clap::Command {
         .version(env!("CARGO_PKG_VERSION"))
 }
 
-fn get_source_line(address: u64, context: &Context<EndianReader<RunTimeEndian, Rc<[u8]>>>) -> Option<Location> {
+fn get_source_line(
+    address: u64,
+    context: &Context<EndianReader<RunTimeEndian, Rc<[u8]>>>,
+) -> Option<Location> {
     let Some(location) = context.find_location(address).unwrap() else {
         return None;
     };
@@ -79,18 +89,29 @@ fn set_breakpoint(breakpoints: &mut Breakpoints, pid: Pid, address: u64) -> Resu
     let original_instruction = ptrace::read(pid, address as *mut c_void)?;
     let modified_instruction = (original_instruction & !0xFF) | 0xCC;
     unsafe {
-        ptrace::write(pid, address as *mut c_void, modified_instruction as *mut c_void)?;
+        ptrace::write(
+            pid,
+            address as *mut c_void,
+            modified_instruction as *mut c_void,
+        )?;
     }
     breakpoints.push((address, original_instruction));
     Ok(())
 }
 
 fn reset_breakpoint(breakpoints: &mut Breakpoints, pid: Pid, address: u64) -> Result<()> {
-    let original_instruction = breakpoints.iter().find(|breakpoint| {
-        breakpoint.0 == address
-    }).ok_or(anyhow!("could not find breakpoint for {}", address))?.1;
+    let original_instruction = breakpoints
+        .iter()
+        .find(|breakpoint| breakpoint.0 == address)
+        .ok_or(anyhow!("could not find breakpoint for {}", address))?
+        .1;
     unsafe {
-        ptrace::write(pid, address as *mut c_void, original_instruction as *mut c_void).expect("failed to reset breakpoint");
+        ptrace::write(
+            pid,
+            address as *mut c_void,
+            original_instruction as *mut c_void,
+        )
+        .expect("failed to reset breakpoint");
     }
     Ok(())
 }
@@ -118,15 +139,30 @@ struct Debuggee<'a> {
     context: Context<EndianReader<RunTimeEndian, Rc<[u8]>>>,
     symbols: SymbolMap<SymbolMapName<'a>>,
     instr_by_symbol: HashMap<&'a str, u64>,
+    instr_by_line: HashMap<String, u64>,
 }
 
-fn do_breakpoint(debuggee: &Debuggee, symbol: String, breakpoints: &mut Breakpoints) -> Result<()> {
-    println!("do_breakpoint");
-    let address = *debuggee.instr_by_symbol.get(symbol.as_str()).unwrap();
+fn do_breakpoint(
+    debuggee: &Debuggee,
+    location: String,
+    breakpoints: &mut Breakpoints,
+    writer: &mut Writer,
+) -> Result<()> {
+    let address = if location.contains(':') {
+        debuggee.instr_by_line.get(location.as_str())
+    } else {
+        debuggee.instr_by_symbol.get(location.as_str())
+    };
 
-    set_breakpoint(breakpoints, debuggee.pid, address)?;
+    let Some(address) = address else {
+        writer.write(b"invalid location")?;
+        return Ok(());
+    };
+    writer.write(b"breakpoint set")?;
+
+    set_breakpoint(breakpoints, debuggee.pid, *address)?;
     continue_to_breakpoint(debuggee.pid)?;
-    reset_breakpoint(breakpoints, debuggee.pid, address)?;
+    reset_breakpoint(breakpoints, debuggee.pid, *address)?;
     Ok(())
 }
 
@@ -134,9 +170,8 @@ fn do_source(debuggee: &Debuggee, writer: &mut Writer) -> Result<()> {
     let registers = ptrace::getregs(debuggee.pid)?;
     if let Some(location) = get_source_line(registers.rip, &debuggee.context) {
         // TODO: Improve error handling here.
-        println!("test2");
-        writer.write(format!("{}:{}\n", location.file.unwrap(), location.line.unwrap()).as_bytes())?;
-        println!("test3");
+        writer
+            .write(format!("{}:{}\n", location.file.unwrap(), location.line.unwrap()).as_bytes())?;
     }
     Ok(())
 }
@@ -176,7 +211,7 @@ fn main() -> Result<()> {
     let stream = listener.accept()?.0;
     let mut reader = Reader::new(&stream);
     let executable_path;
-    
+
     loop {
         let (command, path) = reader.read()?;
         if command == Cmd::Start {
@@ -213,16 +248,24 @@ fn main() -> Result<()> {
     println!("Base Address: {:#x}", base_address[0].0);
 
     // If it's statically linked shouldn't this contain lib instructions?
-    for _i in context.find_location_range(0x1000, 0x564000).unwrap() {
-        //println!("{:#x} - {:?}:{:?}", i.0, i.2.file, i.2.line);
-    }
+    let instr_by_line: HashMap<String, u64> = context
+        .find_location_range(0x1000, 0x564000)
+        .unwrap()
+        .map(|i| {
+            let location = format!("{}:{}", i.2.file.unwrap(), i.2.line.unwrap());
+            (location, i.0)
+        })
+        .collect();
 
     println!("object has debug symbols: {}", object.has_debug_symbols());
     let exe_symbols = object.symbol_map();
 
-    let instr_by_symbol: HashMap<&str, u64> = exe_symbols.symbols().iter().map(|elem| {
-        (elem.name(), elem.address())
-    }).collect();
+    // FIXME: be consistent with instr vs addr.
+    let instr_by_symbol: HashMap<&str, u64> = exe_symbols
+        .symbols()
+        .iter()
+        .map(|elem| (elem.name(), elem.address()))
+        .collect();
 
     let main_addr = *instr_by_symbol.get("main").unwrap();
     println!("main: {:#x}", main_addr);
@@ -232,22 +275,21 @@ fn main() -> Result<()> {
     continue_to_breakpoint(child_pid)?;
     reset_breakpoint(&mut breakpoints, child_pid, main_addr)?;
 
-    let debuggee = Debuggee{
+    let debuggee = Debuggee {
         pid: child_pid,
         context,
         symbols: exe_symbols,
         instr_by_symbol,
+        instr_by_line,
     };
 
     loop {
         let stream = listener.accept()?.0;
         let mut reader = Reader::new(&stream);
         let mut writer = Writer::new(&stream, "daemon");
-        println!("test6");
         let (command, body) = reader.read()?;
-        println!("test5");
         match command {
-            Cmd::Breakpoint => do_breakpoint(&debuggee, body, &mut breakpoints)?,
+            Cmd::Breakpoint => do_breakpoint(&debuggee, body, &mut breakpoints, &mut writer)?,
             Cmd::Source => do_source(&debuggee, &mut writer)?,
             Cmd::Start => todo!(),
             Cmd::Step => do_step(&debuggee, body)?,
