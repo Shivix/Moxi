@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Result};
 use std::net::TcpStream;
 
-mod writer;
-use writer::Writer;
-
 use clap::{Arg, Command};
+
+#[path = "internal/writer.rs"]
+mod writer;
+
+use writer::Writer;
 
 pub fn make_command() -> Command {
     Command::new("step")

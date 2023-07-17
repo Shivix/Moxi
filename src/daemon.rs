@@ -1,5 +1,5 @@
 use std::{
-    borrow::Cow, collections::HashMap, ffi::c_void, fs, io::BufRead, net::TcpListener, path::Path,
+    borrow::Cow, collections::HashMap, fs, io::BufRead, net::TcpListener, path::Path,
     process::Command, rc::Rc,
 };
 
@@ -23,10 +23,16 @@ use addr2line::{
     Location,
 };
 
-mod writer;
-use writer::Writer;
+#[path = "internal/breakpoints.rs"]
+mod breakpoints;
+#[path = "internal/reader.rs"]
 mod reader;
+#[path = "internal/writer.rs"]
+mod writer;
+
+use breakpoints::*;
 use reader::{Cmd, Reader};
+use writer::Writer;
 
 fn make_command() -> clap::Command {
     clap::Command::new("moxid")
@@ -83,59 +89,39 @@ fn get_linked_libraries(elf: &Elf) {
     }
 }
 
-type Breakpoints = Vec<(u64, i64)>;
-
-fn set_breakpoint(breakpoints: &mut Breakpoints, pid: Pid, address: u64) -> Result<()> {
-    let original_instruction = ptrace::read(pid, address as *mut c_void)?;
-    let modified_instruction = (original_instruction & !0xFF) | 0xCC;
-    unsafe {
-        ptrace::write(
-            pid,
-            address as *mut c_void,
-            modified_instruction as *mut c_void,
-        )?;
-    }
-    breakpoints.push((address, original_instruction));
-    Ok(())
-}
-
-fn reset_breakpoint(breakpoints: &mut Breakpoints, pid: Pid, address: u64) -> Result<()> {
-    let original_instruction = breakpoints
-        .iter()
-        .find(|breakpoint| breakpoint.0 == address)
-        .ok_or(anyhow!("could not find breakpoint for {}", address))?
-        .1;
-    unsafe {
-        ptrace::write(
-            pid,
-            address as *mut c_void,
-            original_instruction as *mut c_void,
-        )
-        .expect("failed to reset breakpoint");
-    }
-    Ok(())
-}
-
-fn continue_to_breakpoint(pid: Pid) -> Result<()> {
+fn continue_to_breakpoint(pid: Pid) -> Result<u64> {
     ptrace::cont(pid, None)?;
     loop {
+        println!("INFO: continuing");
         let status = waitpid(pid, None).expect("Failed to wait for the process");
         let registers = ptrace::getregs(pid)?;
-        println!("first{:?}:{:#x}", status, registers.rip);
-
-        if let WaitStatus::Stopped(_, signal) = status {
-            if signal == Signal::SIGTRAP {
-                // Process hit the breakpoint
-                break;
+        println!("INFO: rip: {:#x}, {:?}", registers.rip, status);
+        match status {
+            WaitStatus::Exited(_, exit_code) => {
+                println!("debuggee exited with code {}", exit_code);
+                return Err(anyhow!("exited without hitting breakpoint"));
             }
+            WaitStatus::Stopped(_, signal) => {
+                // TODO: use pattern match.
+                if signal == Signal::SIGTRAP {
+                    // Process hit the breakpoint
+                    break;
+                }
+                if signal == Signal::SIGSEGV {
+                    return Err(anyhow!("Segfault"));
+                }
+                ptrace::cont(pid, None)?;
+            }
+            _ => ptrace::cont(pid, None)?,
         }
-        ptrace::cont(pid, None)?
     }
-    Ok(())
+    let registers = ptrace::getregs(pid)?;
+    Ok(registers.rip)
 }
 
 struct Debuggee<'a> {
     pid: Pid,
+    breakpoints: Breakpoints,
     context: Context<EndianReader<RunTimeEndian, Rc<[u8]>>>,
     symbols: SymbolMap<SymbolMapName<'a>>,
     instr_by_symbol: HashMap<&'a str, u64>,

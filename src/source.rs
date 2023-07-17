@@ -1,10 +1,13 @@
 use anyhow::Result;
 use std::net::TcpStream;
 
-mod writer;
-use writer::Writer;
+#[path = "internal/reader.rs"]
 mod reader;
+#[path = "internal/writer.rs"]
+mod writer;
+
 use reader::Reader;
+use writer::Writer;
 
 use clap::Command;
 

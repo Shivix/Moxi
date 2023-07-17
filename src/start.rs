@@ -1,7 +1,9 @@
 use anyhow::Result;
 use std::net::TcpStream;
 
+#[path = "internal/writer.rs"]
 mod writer;
+
 use writer::Writer;
 
 use clap::{Arg, Command};
