@@ -129,11 +129,11 @@ struct Debuggee<'a> {
 }
 
 fn do_breakpoint(
-    debuggee: &Debuggee,
+    debuggee: &mut Debuggee,
     location: String,
-    breakpoints: &mut Breakpoints,
     writer: &mut Writer,
 ) -> Result<()> {
+    println!("INFO: do_breakpoint");
     let address = if location.contains(':') {
         debuggee.instr_by_line.get(location.as_str())
     } else {
@@ -146,13 +146,13 @@ fn do_breakpoint(
     };
     writer.write(b"breakpoint set")?;
 
-    set_breakpoint(breakpoints, debuggee.pid, *address)?;
-    continue_to_breakpoint(debuggee.pid)?;
-    reset_breakpoint(breakpoints, debuggee.pid, *address)?;
+    // TODO: support removing breakpoints
+    set_breakpoint(&mut debuggee.breakpoints, debuggee.pid, *address)?;
     Ok(())
 }
 
 fn do_source(debuggee: &Debuggee, writer: &mut Writer) -> Result<()> {
+    println!("INFO: do_source");
     let registers = ptrace::getregs(debuggee.pid)?;
     if let Some(location) = get_source_line(registers.rip, &debuggee.context) {
         // TODO: Improve error handling here.
@@ -162,17 +162,24 @@ fn do_source(debuggee: &Debuggee, writer: &mut Writer) -> Result<()> {
     Ok(())
 }
 
-fn do_step(debuggee: &Debuggee, movement: String) -> Result<()> {
-    println!("do_step");
-    let steps = if let Ok(steps) = movement.parse::<i32>() {
-        steps
-    } else {
-        1
-    };
+fn do_step(debuggee: &mut Debuggee, movement: String) -> Result<()> {
+    println!("INFO: do_step");
+    if movement == "continue" {
+        println!("INFO: continueing");
+        let instr = continue_to_breakpoint(debuggee.pid)?;
+        // Better handle continueing to the end
+        println!("INFO: resetting breakpoint");
+        reset_breakpoint(debuggee.pid, debuggee.breakpoints[&instr])?;
+        return Ok(())
+    }
+    let steps = movement.parse::<i32>().unwrap_or(1);
     for _ in 0..steps {
-        let instruction = step(debuggee.pid)?;
-        get_source_line(instruction, &debuggee.context);
-        let symbol = match debuggee.symbols.get(instruction) {
+        let address = step(debuggee.pid)?;
+        if let Some(instruction) = debuggee.breakpoints.get(&address) {
+            reset_breakpoint(debuggee.pid, *instruction)?;
+        }
+        get_source_line(address, &debuggee.context);
+        let symbol = match debuggee.symbols.get(address) {
             Some(symbol) => symbol.name(),
             None => "",
         };
@@ -252,6 +259,9 @@ fn main() -> Result<()> {
         .iter()
         .map(|elem| (elem.name(), elem.address()))
         .collect();
+    // TODO: allow duplicates in these maps? always last/first address?
+    // -//-: Maybe have vector of addresses here? then for x by addr make for each addr?
+    assert!(exe_symbols.symbols().len() == instr_by_symbol.len());
 
     let main_addr = *instr_by_symbol.get("main").unwrap();
     println!("main: {:#x}", main_addr);
@@ -259,26 +269,31 @@ fn main() -> Result<()> {
     let mut breakpoints = Breakpoints::new();
     set_breakpoint(&mut breakpoints, child_pid, main_addr)?;
     continue_to_breakpoint(child_pid)?;
-    reset_breakpoint(&mut breakpoints, child_pid, main_addr)?;
+    reset_breakpoint(child_pid, breakpoints[&main_addr])?;
+    println!("INFO: at start of main");
 
-    let debuggee = Debuggee {
+    let mut debuggee = Debuggee {
         pid: child_pid,
+        breakpoints,
         context,
         symbols: exe_symbols,
         instr_by_symbol,
         instr_by_line,
     };
 
+    // TODO: time to refactor overall structure.
     loop {
         let stream = listener.accept()?.0;
+        println!("INFO: client accepted");
         let mut reader = Reader::new(&stream);
         let mut writer = Writer::new(&stream, "daemon");
         let (command, body) = reader.read()?;
+        println!("INFO: message read: {}", body);
         match command {
-            Cmd::Breakpoint => do_breakpoint(&debuggee, body, &mut breakpoints, &mut writer)?,
+            Cmd::Breakpoint => do_breakpoint(&mut debuggee, body, &mut writer)?,
             Cmd::Source => do_source(&debuggee, &mut writer)?,
             Cmd::Start => todo!(),
-            Cmd::Step => do_step(&debuggee, body)?,
+            Cmd::Step => do_step(&mut debuggee, body)?,
             _ => break,
         };
     }
