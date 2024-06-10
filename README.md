@@ -1,9 +1,9 @@
 # MOdular eXtensIble debugger (WIP)
 A modern debugger designed with modularity and extensibility in mind.
 
-This is still in the early stages, some details here may not be accurate.
-I have not had much time to work on this, but it is not abandoned, this is a long term project.
-Please feel free to give feedback at any stage by creating an issue.
+This is still in the early stages, some details here may not be accurate.\
+I have not had much time to work on this, but it is not abandoned, this is a long term project.\
+Please feel free to give feedback at any stage by creating an issue.\
 It is a unique idea which I believe has alot of potential.
 
 ## Usage
