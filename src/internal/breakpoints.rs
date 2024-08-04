@@ -23,13 +23,15 @@ pub fn set_breakpoint(breakpoints: &mut Breakpoints, pid: Pid, address: u64) -> 
     let instruction = ptrace::read(pid, address as *mut c_void)?;
     println!("read instruction");
     let modified_instruction = (instruction & !0xFF) | 0xCC;
-    ptrace::write(
-        pid,
-        address as *mut c_void,
-        modified_instruction,
-    )?;
+    ptrace::write(pid, address as *mut c_void, modified_instruction)?;
     // TODO: possibly need a range of address :thinking:
-    breakpoints.insert(address, Breakpoint{address, instruction});
+    breakpoints.insert(
+        address,
+        Breakpoint {
+            address,
+            instruction,
+        },
+    );
     println!("INFO: set breakpoint at {:#x}", address);
     Ok(())
 }
@@ -44,4 +46,3 @@ pub fn reset_breakpoint(pid: Pid, breakpoint: Breakpoint) -> Result<()> {
     // TODO: remove from Breakpoints. Probably makes sense as method for Breakpoints
     Ok(())
 }
-

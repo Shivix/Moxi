@@ -13,14 +13,8 @@ use nix::sys::{
 };
 use nix::{sys::signal::Signal, unistd::Pid};
 
-use addr2line::{
-    self,
-    Loader,
-};
-use addr2line::{
-    gimli::DW_LANG_C_plus_plus,
-    Location,
-};
+use addr2line::{self, Loader};
+use addr2line::{gimli::DW_LANG_C_plus_plus, Location};
 
 use object::{Object, SymbolMap, SymbolMapName};
 
@@ -42,10 +36,7 @@ fn make_command() -> clap::Command {
         .version(env!("CARGO_PKG_VERSION"))
 }
 
-fn get_source_line(
-    address: u64,
-    loader: &Loader,
-) -> Option<Location> {
+fn get_source_line(address: u64, loader: &Loader) -> Option<Location> {
     println!("Addr for source: {:#x}", address);
     let Some(location) = loader.find_location(address).unwrap() else {
         return None;
@@ -60,16 +51,17 @@ fn get_source_line(
     Some(location)
 }
 
-fn binary_base_address(child: Pid) -> (u64, Vec<(u64, u64)>) {
+fn binary_base_address(child: Pid) -> Vec<(u64, u64)> {
     let maps_path = format!("/proc/{}/maps", child);
     let mappings = std::fs::File::open(maps_path).expect("failed to open memory mappings file");
     // TODO: make more robust by getting 00000000 for matching binary name
     let mut result = Vec::new();
     let reader = std::io::BufReader::new(mappings);
-    let mut base_address = 0_u64;
     for line in reader.lines() {
         let line = line.unwrap();
-        if (line.contains("r-xp") && line.contains('/')) || base_address == 0 {
+        // line.contains("r-xp") Need base address, but for rest should only need executable parts.
+        if line.contains('/') {
+            println!("{}", line);
             let address_range = line
                 .split_once('-')
                 .expect("memory mapping file has invalid format");
@@ -77,17 +69,13 @@ fn binary_base_address(child: Pid) -> (u64, Vec<(u64, u64)>) {
                 .expect("start address is not valid hexadecimal");
             let end_address = u64::from_str_radix(address_range.1.split_once(' ').unwrap().0, 16)
                 .expect("end address is not valid hexadecimal");
-            println!("{:#x}, {:#x}", start_address, end_address);
             result.push((start_address, end_address));
-            if base_address == 0 {
-                base_address = start_address;
-            }
         }
     }
     if result.is_empty() {
         panic!("unable to find executable base address")
     }
-    (base_address, result)
+    result
 }
 
 fn get_linked_libraries(elf: &Elf) {
@@ -133,13 +121,10 @@ struct Debuggee<'a> {
     symbols: SymbolMap<SymbolMapName<'a>>,
     instr_by_symbol: HashMap<&'a str, u64>,
     instr_by_line: HashMap<String, u64>,
+    base_address: u64,
 }
 
-fn do_breakpoint(
-    debuggee: &mut Debuggee,
-    location: String,
-    writer: &mut Writer,
-) -> Result<()> {
+fn do_breakpoint(debuggee: &mut Debuggee, location: String, writer: &mut Writer) -> Result<()> {
     println!("INFO: do_breakpoint");
     let address = if location.contains(':') {
         debuggee.instr_by_line.get(location.as_str())
@@ -158,10 +143,11 @@ fn do_breakpoint(
     Ok(())
 }
 
-fn do_source(debuggee: &Debuggee, writer: &mut Writer, base_address: u64) -> Result<()> {
+fn do_source(debuggee: &Debuggee, writer: &mut Writer) -> Result<()> {
     println!("INFO: do_source");
     let registers = ptrace::getregs(debuggee.pid)?;
-    if let Some(location) = get_source_line(registers.rip - base_address, &debuggee.loader) {
+    if let Some(location) = get_source_line(registers.rip - debuggee.base_address, &debuggee.loader)
+    {
         // TODO: Improve error handling here.
         writer
             .write(format!("{}:{}\n", location.file.unwrap(), location.line.unwrap()).as_bytes())?;
@@ -179,7 +165,7 @@ fn do_step(debuggee: &mut Debuggee, movement: String) -> Result<()> {
         // Better handle continuing to the end
         println!("INFO: resetting breakpoint");
         reset_breakpoint(debuggee.pid, debuggee.breakpoints[&instr])?;
-        return Ok(())
+        return Ok(());
     }
     let steps = movement.parse::<i32>().unwrap_or(1);
     for _ in 0..steps {
@@ -188,7 +174,7 @@ fn do_step(debuggee: &mut Debuggee, movement: String) -> Result<()> {
             reset_breakpoint(debuggee.pid, *instruction)?;
         }
         get_source_line(address, &debuggee.loader);
-        let symbol = match debuggee.symbols.get(address) {
+        let symbol = match debuggee.symbols.get(address - debuggee.base_address) {
             Some(symbol) => symbol.name(),
             None => "",
         };
@@ -209,6 +195,7 @@ fn step(pid: Pid) -> Result<u64> {
 }
 
 fn main() -> Result<()> {
+    // TODO: Have thorough logging that's only in debug mode.
     let listener = TcpListener::bind("localhost:44500")?;
     println!("Waiting to accept init");
     let stream = listener.accept()?.0;
@@ -251,12 +238,18 @@ fn main() -> Result<()> {
     //personality::set(Persona::ADDR_NO_RANDOMIZE)?;
     println!("address space layout randomization not disabled");
 
-    let (base_address, _) = binary_base_address(child_pid);
+    let addresses = binary_base_address(child_pid);
+    // TODO: Make use of base_address as offset consistent.
+    let base_address = addresses[0].0;
     println!("Base Address: {:#x}", base_address);
+    println!("Loader Base Address: {:#x}", loader.relative_address_base());
+
+    let last_address = addresses.last().unwrap().1;
+    println!("Final Address: {:#x}", last_address);
 
     // If it's statically linked shouldn't this contain lib instructions?
     let instr_by_line: HashMap<String, u64> = loader
-        .find_location_range(0x1000, 0x564000)
+        .find_location_range(base_address, last_address)
         .unwrap()
         .map(|i| {
             let location = format!("{}:{}", i.2.file.unwrap(), i.2.line.unwrap());
@@ -278,10 +271,11 @@ fn main() -> Result<()> {
     assert!(exe_symbols.symbols().len() == instr_by_symbol.len());
 
     /*
-    56086b0a4000-56086b0a5000 r--p 00000000 103:02 18221675                  /home/shivix/RustProjects/Moxi/test/a.out
-    56086b0a5000-56086b0a6000 r-xp 00001000 103:02 18221675                  /home/shivix/RustProjects/Moxi/test/a.out
-    Should I have first line as base address?
-    */
+     * GDB has a consistent address in info proc mappings and main address but ours changes
+     * not a problem yet but why?
+     * GDB shows libc in info proc mappings but is not in proc/pid/mappings
+     * Neither Moxi or GDB can find what's at the 0x7... addresses
+     */
     let main_addr = *instr_by_symbol.get("main").unwrap() + base_address;
     println!("found main function: {:#x}", main_addr);
 
@@ -299,6 +293,7 @@ fn main() -> Result<()> {
         symbols: exe_symbols,
         instr_by_symbol,
         instr_by_line,
+        base_address,
     };
 
     // TODO: time to refactor overall structure.
@@ -311,7 +306,7 @@ fn main() -> Result<()> {
         println!("INFO: message read: {}", body);
         match command {
             Cmd::Breakpoint => do_breakpoint(&mut debuggee, body, &mut writer)?,
-            Cmd::Source => do_source(&debuggee, &mut writer, base_address)?,
+            Cmd::Source => do_source(&debuggee, &mut writer)?,
             Cmd::Start => todo!(),
             Cmd::Step => do_step(&mut debuggee, body)?,
             _ => break,
