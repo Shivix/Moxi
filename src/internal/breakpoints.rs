@@ -21,14 +21,13 @@ pub fn set_breakpoint(breakpoints: &mut Breakpoints, pid: Pid, address: u64) -> 
         return Err(anyhow!("breakpoint already exists"));
     }
     let instruction = ptrace::read(pid, address as *mut c_void)?;
+    println!("read instruction");
     let modified_instruction = (instruction & !0xFF) | 0xCC;
-    unsafe {
-        ptrace::write(
-            pid,
-            address as *mut c_void,
-            modified_instruction as *mut c_void,
-        )?;
-    }
+    ptrace::write(
+        pid,
+        address as *mut c_void,
+        modified_instruction,
+    )?;
     // TODO: possibly need a range of address :thinking:
     breakpoints.insert(address, Breakpoint{address, instruction});
     println!("INFO: set breakpoint at {:#x}", address);
@@ -36,14 +35,13 @@ pub fn set_breakpoint(breakpoints: &mut Breakpoints, pid: Pid, address: u64) -> 
 }
 
 pub fn reset_breakpoint(pid: Pid, breakpoint: Breakpoint) -> Result<()> {
-    unsafe {
-        ptrace::write(
-            pid,
-            breakpoint.address as *mut c_void,
-            breakpoint.instruction as *mut c_void,
-        )
-        .expect("failed to reset breakpoint");
-    }
+    ptrace::write(
+        pid,
+        breakpoint.address as *mut c_void,
+        breakpoint.instruction,
+    )
+    .expect("failed to reset breakpoint");
+    // TODO: remove from Breakpoints. Probably makes sense as method for Breakpoints
     Ok(())
 }
 

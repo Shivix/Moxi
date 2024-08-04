@@ -37,6 +37,7 @@ impl Reader {
         let mut buffer = Vec::<u8>::new();
         let bytes_read = self.reader.read_until(b'\0', &mut buffer)?;
         if bytes_read == 0 {
+            eprintln!("No bytes read");
             todo!();
         }
         let buffer = String::from_utf8_lossy(&buffer[..buffer.len() - 1]);

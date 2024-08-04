@@ -22,6 +22,6 @@ fn main() -> Result<()> {
     let (_, source) = reader.read()?;
     // TODO: args to remove line number?
     let (file, line) = source.split_once(':').unwrap();
-    print!("{}", source);
+    print!("{}:{}", file, line);
     Ok(())
 }
