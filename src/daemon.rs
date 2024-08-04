@@ -16,7 +16,7 @@ use nix::{sys::signal::Signal, unistd::Pid};
 use addr2line::{self, Loader};
 use addr2line::{gimli::DW_LANG_C_plus_plus, Location};
 
-use object::{Object, SymbolMap, SymbolMapName};
+use object::{Object, ObjectSymbol, SymbolMap, SymbolMapName};
 
 #[path = "internal/breakpoints.rs"]
 mod breakpoints;
@@ -80,7 +80,7 @@ fn binary_base_address(child: Pid) -> Vec<(u64, u64)> {
 
 fn get_linked_libraries(elf: &Elf) {
     for lib in elf.libraries.iter() {
-        println!("{}", lib);
+        println!("Found linked library: {}", lib);
     }
 }
 
@@ -242,10 +242,20 @@ fn main() -> Result<()> {
     // TODO: Make use of base_address as offset consistent.
     let base_address = addresses[0].0;
     println!("Base Address: {:#x}", base_address);
-    println!("Loader Base Address: {:#x}", loader.relative_address_base());
-
     let last_address = addresses.last().unwrap().1;
     println!("Final Address: {:#x}", last_address);
+
+    let main_addr = object.symbol_by_name("main").unwrap().address() + base_address;
+    println!("main function: {:#x}", main_addr);
+    let mut breakpoints = Breakpoints::new();
+    // TODO: How to tell when to offset address?
+    set_breakpoint(&mut breakpoints, child_pid, main_addr)?;
+    continue_to_breakpoint(child_pid)?;
+    reset_breakpoint(child_pid, breakpoints[&main_addr])?;
+    println!("INFO: at start of main");
+
+    // We must get to main first to ensure libraries are loaded to get full mappings.
+    let _addresses = binary_base_address(child_pid);
 
     // If it's statically linked shouldn't this contain lib instructions?
     let instr_by_line: HashMap<String, u64> = loader
@@ -272,20 +282,12 @@ fn main() -> Result<()> {
 
     /*
      * GDB has a consistent address in info proc mappings and main address but ours changes
-     * not a problem yet but why?
+     * not a problem yet but why? Address space randomization presumably?
      * GDB shows libc in info proc mappings but is not in proc/pid/mappings
-     * Neither Moxi or GDB can find what's at the 0x7... addresses
+     *      proc/pid/mappings seems to be different when opened with gdb.
+     *      Libc is not loaded into mappings until later. <<<<<<<<<
+     * Neither Moxi or GDB can find what's at the 0x7... addresses in test/a.out
      */
-    let main_addr = *instr_by_symbol.get("main").unwrap() + base_address;
-    println!("found main function: {:#x}", main_addr);
-
-    let mut breakpoints = Breakpoints::new();
-    // TODO: How to tell when to offset address?
-    set_breakpoint(&mut breakpoints, child_pid, main_addr)?;
-    continue_to_breakpoint(child_pid)?;
-    reset_breakpoint(child_pid, breakpoints[&main_addr])?;
-    println!("INFO: at start of main");
-
     let mut debuggee = Debuggee {
         pid: child_pid,
         breakpoints,
