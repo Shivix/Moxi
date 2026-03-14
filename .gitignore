@@ -1,2 +1,2 @@
-/target
-*.asm
+.zig-cache/
+zig-out/

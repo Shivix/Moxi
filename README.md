@@ -1,17 +1,21 @@
 # MOdular eXtensIble debugger (WIP)
 A modern debugger designed with modularity and extensibility in mind.
 
-This is still in the early stages, some details here may not be accurate.\
-I have not had much time to work on this, but it is not abandoned, this is a long term project.\
-Please feel free to give feedback at any stage by creating an issue.\
-It is a unique idea which I believe has alot of potential.
+As of right now, I am purely focusing on debugging a single Zig binary not linked to libc, on linux.
+As I progress I will add support for:
+* Zig binaries linked to libc
+* Zig binaries linked to other libraries
+* Statically linked c binaries
+* Dynamically linked c binaries
+* Multiple binaries at once
+* C++ binaries
+* Mac support
+* BSD support
+* And maybe more
 
 ## Usage
 Moxid is the main application that will attach to any process you wish to debug. This should be
-started using systemd.
-
-Run `moxi init` as part of your shell config to configure the tools for communicating with the
-daemon.
+started using systemd, until you're actively debugging, it will not be doing anything.
 
 Use `moxi --help` or `man moxi` for more details.
 
@@ -22,17 +26,16 @@ some inspiration, here are some examples I use:
 * A Fish shell function for printing the current file, highlighting the current line being run
 ```fish
 function source
-    set source (moxi source) 
+    set source (moxi source)
     set source (string split ":" $source)
     bat $source[1] --highlight-line $source[2]
 end
 ```
 
 ## Installation
-Can be installed using:
-```
-cargo install moxi
-```
+
+## Testing
+Example test binaries can be built with `zig build testbinaries`. These are the binaries used within our test scripts.
 
 ## Issues
-Any bugs/ requests can be added to the [issues](https://github.com/Shivix/moxi/issues) page on the github repository.
+Any bugs/ requests can be added to the [issues](https://github.com/Shivix/Moxi/issues) page on the github repository.
