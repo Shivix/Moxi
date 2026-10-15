@@ -137,11 +137,27 @@ pub fn build(b: *std.Build) void {
         .root_module = zig_libc_mod,
     });
 
+    const c_test = b.addExecutable(.{
+        .name = "c_test",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    c_test.root_module.addCSourceFiles(.{
+        .files = &.{"test/c_test.c"},
+        .flags = &.{"-std=c17"},
+    });
+    c_test.pie = true;
+
     const testbin_step = b.step("testbinaries", "Build test executables");
     testbin_step.dependOn(&zig_helloworld.step);
     testbin_step.dependOn(&zig_pie.step);
     testbin_step.dependOn(&zig_libc.step);
+    testbin_step.dependOn(&c_test.step);
     testbin_step.dependOn(&b.addInstallArtifact(zig_helloworld, .{}).step);
     testbin_step.dependOn(&b.addInstallArtifact(zig_pie, .{}).step);
     testbin_step.dependOn(&b.addInstallArtifact(zig_libc, .{}).step);
+    testbin_step.dependOn(&b.addInstallArtifact(c_test, .{}).step);
 }
