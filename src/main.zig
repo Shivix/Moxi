@@ -16,10 +16,10 @@ const linux = std.os.linux;
 
 // TODO: Plan:
 // What structure do I want?
-// Create a binary/ debugee class
+// Create an executable/debuggee class
 // Should be able to handle having multiple of them for future features.
 // Handles detecting whever or not it's PIE/ ASLR and handles address offsets.
-// Handles cleaning up that binaries stuff if no longer debugging it or it finishes.
+// Handles cleaning up an executable's state when debugging finishes.
 //
 // What design is best for allowing less logic in daemon and more in the command programs.
 // Step: ofc this involves ptracing, so must have daemon do that.
@@ -31,19 +31,19 @@ const linux = std.os.linux;
 //     Setting up socket to listen on.
 //     I assume one program can ptrace many if it tracks the pids
 //     How does the user set which one it's controlling?
-//     A command to list and adjust the current tracked binary?
+//     A command to list and adjust the current tracked executable?
 //     $ moxi ls
-//     ID Binary         PID
+//     ID Executable     PID
 //     1  zig_helloworld 2167
 //     $ moxi switch 1
 //     or
 //     $ moxi step -1 --id 1
-//     argument for which pid/ binary/ ID?
+//     argument for which pid/ executable/ ID?
 //
 //     When you run moxi start, how do you know if we should replace a debuggee vs add new one?
 //     $ moxi stop 1/ all
-//     $ moxi start (replaces binary of same name)
-//     $ moxi add (adds new binary) or moxi start --add       moxi add could be alias to moxi start --add
+//     $ moxi start (replaces executable of same name)
+//     $ moxi add (adds new executable) or moxi start --add       moxi add could be alias to moxi start --add
 //
 // Core features:
 // Setting breakpoints
@@ -66,11 +66,11 @@ const linux = std.os.linux;
 pub fn main(init: std.process.Init.Minimal) !void {
     var args = std.process.Args.Iterator.init(init.args);
     _ = args.next(); // argv[0]
-    const binary_path = args.next() orelse {
-        std.debug.print("usage: moxi <binary>\n", .{});
-        return error.MissingBinaryPath;
+    const executable_path = args.next() orelse {
+        std.debug.print("usage: moxi <executable>\n", .{});
+        return error.MissingExecutablePath;
     };
-    std.debug.print("Binary: {s}\n", .{binary_path});
+    std.debug.print("Executable: {s}\n", .{executable_path});
 
     var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
     const gpa = debug_alloc.allocator();
@@ -78,8 +78,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
-
-    const pid = moxi.spawn_child_process(binary_path);
+    const pid = moxi.spawn_child_process(executable_path);
 
     // What the difference between child traceme and attaching from parent? Which is better? Could not get parent attach to work.
     //_ = linux.ptrace(linux.PTRACE.ATTACH, pid, 0, 0, 0);
@@ -96,7 +95,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer proc_mappings.deinit(gpa);
 
     // ELFFFFFFFFFFFFFFFF
-    const file = try std.Io.Dir.cwd().openFile(io, binary_path, .{});
+    const file = try std.Io.Dir.cwd().openFile(io, executable_path, .{});
     defer file.close(io);
 
     _ = c.elf_version(c.EV_CURRENT);
@@ -111,35 +110,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return error.ElfGetEhdrFailed;
     }
 
-    // Find the runtime mapping for the executable PT_LOAD segment. The load
-    // bias is the difference between its runtime address and ELF virtual
-    // address; the file offset identifies the corresponding /proc mapping.
-    var executable_base: u64 = undefined;
-    var found_load_segment = false;
-    var phdr: c.GElf_Phdr = undefined;
-    var phdr_index: usize = 0;
-    while (phdr_index < ehdr.e_phnum) : (phdr_index += 1) {
-        if (c.gelf_getphdr(elf, @intCast(phdr_index), &phdr) == null) {
-            return error.ElfGetPhdrFailed;
-        }
-        if (phdr.p_type == c.PT_LOAD and (phdr.p_flags & c.PF_X) != 0) {
-            const page_size: u64 = 4096;
-            const segment_offset = phdr.p_offset & ~(page_size - 1);
-            const segment_vaddr = phdr.p_vaddr & ~(page_size - 1);
-            for (proc_mappings.items) |mapping| {
-                if (mapping.offset == segment_offset) {
-                    executable_base = mapping.start - segment_vaddr;
-                    found_load_segment = true;
-                    break;
-                }
-            }
-            if (found_load_segment) break;
-        }
-    }
-    if (!found_load_segment) {
-        return error.ExecutableLoadSegmentNotFound;
-    }
-    std.debug.print("TEST: 0x{x}\n", .{executable_base});
+    const load_bias = try moxi.get_load_bias(
+        elf,
+        &ehdr,
+        proc_mappings.items,
+    );
+    std.debug.print("TEST: 0x{x}\n", .{load_bias});
 
     std.debug.print("entry point: 0x{x}\n", .{ehdr.e_entry});
     std.debug.print("is PIE: {}\n", .{ehdr.e_type == c.ET_DYN});
@@ -184,8 +160,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     //   0x0000000001154451 <+1>:    mov    %rsp,%rbp
     //   0x0000000001154454 <+4>:    sub    $0x30,%rsp
     //=> 0x0000000001154458 <+8>:    mov    $0x11a503d,%rax
-    const runtime_entry = executable_base + ehdr.e_entry;
-    const main_addr = try moxi.get_main_address(dwfl, runtime_entry, executable_base);
+    const runtime_entry = load_bias + ehdr.e_entry;
+    const main_addr = try moxi.get_main_address(dwfl, runtime_entry, load_bias);
 
     const main_instr = try moxi.set_breakpoint(pid, main_addr);
     try moxi.continue_until_breakpoint(pid);
@@ -255,6 +231,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     // TODO: Set up in moxi style, listen etc.
     // Have separate window for running a make file that builds and runs daemon, then in main window can run commands we wanna test.
-    // Maybe create an application specifically for testing? Does a bit of all actions for a certain binary? Goes to main, sets break point,
+    // Maybe create an application specifically for testing? Does a bit of all actions for a certain executable? Goes to main, sets break point,
     // continues, hits breakpoint, steps, reads source etc. Maybe even have that as a unit test?
 }

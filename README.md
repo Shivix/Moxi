@@ -1,14 +1,14 @@
 # MOdular eXtensIble debugger (WIP)
 A modern debugger designed with modularity and extensibility in mind.
 
-As of right now, I am purely focusing on debugging a single Zig binary not linked to libc, on linux.
+As of right now, I am purely focusing on debugging a single Zig executable not linked to libc, on linux.
 As I progress I will add support for:
-* Zig binaries linked to libc
-* Zig binaries linked to other libraries
-* Statically linked c binaries
-* Dynamically linked c binaries
-* Multiple binaries at once
-* C++ binaries
+* Zig executables linked to libc
+* Zig executables linked to other libraries
+* Statically linked C executables
+* Dynamically linked C executables
+* Multiple executables at once
+* C++ executables
 * Mac support
 * BSD support
 * And maybe more
@@ -35,7 +35,7 @@ end
 ## Installation
 
 ## Testing
-Example test binaries can be built with `zig build testbinaries`. These are the binaries used within our test scripts.
+Example test binaries can be built with `zig build testbinaries`. These are the executables used within our test scripts.
 
 ## Issues
 Any bugs/ requests can be added to the [issues](https://github.com/Shivix/Moxi/issues) page on the github repository.

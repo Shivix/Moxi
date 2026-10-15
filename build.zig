@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
         .root_module = zig_libc_mod,
     });
 
-    const testbin_step = b.step("testbinaries", "Build test binaries");
+    const testbin_step = b.step("testbinaries", "Build test executables");
     testbin_step.dependOn(&zig_helloworld.step);
     testbin_step.dependOn(&zig_pie.step);
     testbin_step.dependOn(&zig_libc.step);

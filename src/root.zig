@@ -3,6 +3,8 @@ const std = @import("std");
 
 pub const c = @import("c");
 
+const page_size: u64 = 4096;
+
 pub const Registers = struct {
     r15: u64,
     r14: u64,
@@ -33,10 +35,15 @@ pub const Registers = struct {
     gs: u64,
 };
 
-pub const ProcMappings = std.ArrayList(struct { start: u64, end: u64, offset: u64 });
+pub const ProcMapping = struct {
+    start: u64,
+    end: u64,
+    offset: u64,
+};
+pub const ProcMappings = std.ArrayList(ProcMapping);
 
 /// Only parent will return from this function
-pub fn spawn_child_process(binary_path: []const u8) i32 {
+pub fn spawn_child_process(executable_path: []const u8) i32 {
     const pid: i32 = @intCast(std.os.linux.fork());
     // pid 0 is the Child process (the program we are debugging).
     if (pid == 0) {
@@ -49,7 +56,7 @@ pub fn spawn_child_process(binary_path: []const u8) i32 {
         //_ = std.posix.raise(std.posix.SIG.STOP) catch unreachable;
 
         const argv = [_:null]?[*:0]const u8{
-            @ptrCast(binary_path),
+            @ptrCast(executable_path),
             null,
         };
 
@@ -117,6 +124,40 @@ pub fn parse_proc_mappings(
     }
 
     return result;
+}
+
+pub fn find_mapping_for_offset(
+    mappings: []const ProcMapping,
+    offset: u64,
+) ?ProcMapping {
+    const aligned_offset = offset & ~(page_size - 1);
+
+    for (mappings) |mapping| {
+        if (mapping.offset == aligned_offset) return mapping;
+    }
+    return null;
+}
+
+pub fn get_load_bias(
+    elf: ?*c.Elf,
+    ehdr: *const c.Elf64_Ehdr,
+    proc_mappings: []const ProcMapping,
+) !u64 {
+    var phdr: c.GElf_Phdr = undefined;
+
+    for (0..ehdr.e_phnum) |phdr_index| {
+        if (c.gelf_getphdr(elf, @intCast(phdr_index), &phdr) == null) {
+            return error.ElfGetPhdrFailed;
+        }
+        if (phdr.p_type != c.PT_LOAD or (phdr.p_flags & c.PF_X) == 0) continue;
+
+        // TODO: Also match the mapping pathname against the executable. An
+        // offset-only match could select a library mapping if offsets collide.
+        const mapping = find_mapping_for_offset(proc_mappings, phdr.p_offset) orelse continue;
+        return mapping.start - (phdr.p_vaddr & ~(page_size - 1));
+    }
+
+    return error.ExecutableLoadSegmentNotFound;
 }
 
 pub fn get_main_address(dwfl: ?*c.struct_Dwfl, entry_point: u64, load_bias: u64) !u64 {
@@ -207,4 +248,14 @@ pub fn reset_breakpoint(pid: i32, address: usize, original_instruction: usize) !
         return error.PeekDataFailed;
     }
     std.debug.print("reinstated instruction: 0x{x}\n", .{instruction});
+}
+
+test "find_mapping_for_offset matches page-aligned offsets" {
+    const mappings = [_]ProcMapping{
+        .{ .start = 0x1000, .end = 0x2000, .offset = 0x732000 },
+        .{ .start = 0x3000, .end = 0x4000, .offset = 0x76b000 },
+    };
+
+    const mapping = find_mapping_for_offset(&mappings, 0x76b123) orelse unreachable;
+    try std.testing.expectEqual(@as(u64, 0x3000), mapping.start);
 }
