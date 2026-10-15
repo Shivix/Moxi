@@ -33,7 +33,7 @@ pub const Registers = struct {
     gs: u64,
 };
 
-pub const ProcMappings = std.ArrayList(struct { start: u64, end: u64 });
+pub const ProcMappings = std.ArrayList(struct { start: u64, end: u64, offset: u64 });
 
 /// Only parent will return from this function
 pub fn spawn_child_process(binary_path: []const u8) i32 {
@@ -89,27 +89,29 @@ pub fn parse_proc_mappings(
     while (try reader.takeDelimiter('\n')) |line| {
         std.debug.print("{s}\n", .{line});
         if (std.mem.indexOfScalar(u8, line, '/') != null) {
-            if (std.mem.indexOf(u8, line, "r-xp") == null) {
+            var fields = std.mem.tokenizeAny(u8, line, " \t");
+            const range = fields.next() orelse return error.InvalidProcMappings;
+            const permissions = fields.next() orelse return error.InvalidProcMappings;
+            const offset_str = fields.next() orelse return error.InvalidProcMappings;
+            if (!std.mem.eql(u8, permissions, "r-xp")) {
                 // TODO: For now, only return the executable portion.
                 continue;
             }
-            const dash_index = std.mem.indexOfScalar(u8, line, '-') orelse
+            const dash_index = std.mem.indexOfScalar(u8, range, '-') orelse
                 return error.InvalidProcMappings;
 
-            const start_str = line[0..dash_index];
+            const start_str = range[0..dash_index];
 
-            const rest = line[dash_index + 1 ..];
-            const space_index = std.mem.indexOfScalar(u8, rest, ' ') orelse
-                return error.InvalidProcMappings;
-
-            const end_str = rest[0..space_index];
+            const end_str = range[dash_index + 1 ..];
 
             const start_address = try std.fmt.parseInt(u64, start_str, 16);
             const end_address = try std.fmt.parseInt(u64, end_str, 16);
+            const offset = try std.fmt.parseInt(u64, offset_str, 16);
 
             try result.append(allocator, .{
                 .start = start_address,
                 .end = end_address,
+                .offset = offset,
             });
         }
     }
@@ -117,7 +119,7 @@ pub fn parse_proc_mappings(
     return result;
 }
 
-pub fn get_main_address(dwfl: ?*c.struct_Dwfl, entry_point: u64) !u64 {
+pub fn get_main_address(dwfl: ?*c.struct_Dwfl, entry_point: u64, load_bias: u64) !u64 {
     const mod = c.dwfl_addrmodule(dwfl, entry_point);
     if (mod == null) {
         return error.NoModuleFound;
@@ -134,8 +136,8 @@ pub fn get_main_address(dwfl: ?*c.struct_Dwfl, entry_point: u64) !u64 {
         }
 
         if (std.mem.eql(u8, std.mem.span(name), "main.main")) {
-            std.debug.print("found main: {s} @ 0x{x}\n", .{name, sym.st_value});
-            return sym.st_value;
+            std.debug.print("found main: {s} @ 0x{x}\n", .{ name, sym.st_value });
+            return sym.st_value + load_bias;
         }
     }
     return error.CouldNotFindMain;
@@ -169,11 +171,7 @@ pub fn set_breakpoint(pid: i32, address: usize) !usize {
         return error.PeekDataFailed;
     }
     std.debug.print("original instruction: 0x{x}\n", .{instruction});
-     // TODO: From AI, maybe wrong:
-     //     src/root.zig:175 uses instruction & 0xFFFFFF00, which is effectively a 32-bit mask. On x86_64 this can clobber the upper half of the fetched instruction word.
-     //     Use a full-width mask (~@as(usize, 0xFF)) consistently.
-    // This likely fixes the illegal instruction. If we look at the breakpoint value it was more than a byte before.
-    const breakpoint = (instruction & 0xFFFFFF00) | 0xCC;
+    const breakpoint = (instruction & ~@as(usize, 0xFF)) | 0xCC;
     std.debug.print("breakpoint: 0x{x}\n", .{breakpoint});
     std.debug.print("old breakpoint: 0x{x}\n", .{(instruction & ~@as(usize, 0xFF)) | 0xCC});
     rc = std.os.linux.ptrace(std.os.linux.PTRACE.POKEDATA, pid, address, breakpoint, 0);

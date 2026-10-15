@@ -94,9 +94,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var proc_mappings = try moxi.parse_proc_mappings(gpa, io, pid);
     defer proc_mappings.deinit(gpa);
-    // TODO: Currently we only grab the first proc mappings, will need to use the rest to support libraries.
-    const executable_base = proc_mappings.items[0].start;
-    std.debug.print("TEST: 0x{x}\n", .{executable_base});
 
     // ELFFFFFFFFFFFFFFFF
     const file = try std.Io.Dir.cwd().openFile(io, binary_path, .{});
@@ -113,6 +110,37 @@ pub fn main(init: std.process.Init.Minimal) !void {
     if (c.gelf_getehdr(elf, &ehdr) == null) {
         return error.ElfGetEhdrFailed;
     }
+
+    // Find the runtime mapping for the executable PT_LOAD segment. The load
+    // bias is the difference between its runtime address and ELF virtual
+    // address; the file offset identifies the corresponding /proc mapping.
+    var executable_base: u64 = undefined;
+    var found_load_segment = false;
+    var phdr: c.GElf_Phdr = undefined;
+    var phdr_index: usize = 0;
+    while (phdr_index < ehdr.e_phnum) : (phdr_index += 1) {
+        if (c.gelf_getphdr(elf, @intCast(phdr_index), &phdr) == null) {
+            return error.ElfGetPhdrFailed;
+        }
+        if (phdr.p_type == c.PT_LOAD and (phdr.p_flags & c.PF_X) != 0) {
+            const page_size: u64 = 4096;
+            const segment_offset = phdr.p_offset & ~(page_size - 1);
+            const segment_vaddr = phdr.p_vaddr & ~(page_size - 1);
+            for (proc_mappings.items) |mapping| {
+                if (mapping.offset == segment_offset) {
+                    executable_base = mapping.start - segment_vaddr;
+                    found_load_segment = true;
+                    break;
+                }
+            }
+            if (found_load_segment) break;
+        }
+    }
+    if (!found_load_segment) {
+        return error.ExecutableLoadSegmentNotFound;
+    }
+    std.debug.print("TEST: 0x{x}\n", .{executable_base});
+
     std.debug.print("entry point: 0x{x}\n", .{ehdr.e_entry});
     std.debug.print("is PIE: {}\n", .{ehdr.e_type == c.ET_DYN});
 
@@ -156,7 +184,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     //   0x0000000001154451 <+1>:    mov    %rsp,%rbp
     //   0x0000000001154454 <+4>:    sub    $0x30,%rsp
     //=> 0x0000000001154458 <+8>:    mov    $0x11a503d,%rax
-    const main_addr = try moxi.get_main_address(dwfl, ehdr.e_entry);
+    const runtime_entry = executable_base + ehdr.e_entry;
+    const main_addr = try moxi.get_main_address(dwfl, runtime_entry, executable_base);
 
     const main_instr = try moxi.set_breakpoint(pid, main_addr);
     try moxi.continue_until_breakpoint(pid);
