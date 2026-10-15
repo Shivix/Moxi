@@ -4,6 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const c_module = b.addTranslateC(.{
+        .root_source_file = b.path("src/c.h"),
+        .target = target,
+        .optimize = optimize,
+    }).createModule();
+
     // We probably do eventually want a module to help people make custom programs for moxi.
     const mod = b.addModule("moxi", .{
         // The root source file is the "entry point" of this module. Users of
@@ -14,6 +20,9 @@ pub fn build(b: *std.Build) void {
         // the root file.
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "c", .module = c_module },
+        },
     });
 
     // Here we define an executable. An executable needs to have a root module
@@ -62,9 +71,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -89,7 +96,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{
                 .name = "foo",
-                .module = b.addModule("foo", .{
+                .module = b.createModule(.{
                     .root_source_file = b.path("test/zig_helloworld/root.zig"),
                     .target = target,
                 }),
@@ -105,7 +112,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{
                 .name = "foo",
-                .module = b.addModule("foo", .{
+                .module = b.createModule(.{
                     .root_source_file = b.path("test/zig_helloworld/libc_root.zig"),
                     .target = target,
                 }),

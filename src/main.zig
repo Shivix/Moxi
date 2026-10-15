@@ -63,14 +63,19 @@ const linux = std.os.linux;
 //
 //
 // When stepping we'd need to handle stepping onto breakpoints I think. Maybe not actually? Surelly we'd just receive a sigtrap as like with continue?
-pub fn main() !void {
-    const binary_path = "zig-out/bin/zig_helloworld";
+pub fn main(init: std.process.Init.Minimal) !void {
+    var args = std.process.Args.Iterator.init(init.args);
+    _ = args.next(); // argv[0]
+    const binary_path = args.next() orelse {
+        std.debug.print("usage: moxi <binary>\n", .{});
+        return error.MissingBinaryPath;
+    };
     std.debug.print("Binary: {s}\n", .{binary_path});
 
     var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
     const gpa = debug_alloc.allocator();
 
-    var threaded: std.Io.Threaded = .init(gpa);
+    var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -79,8 +84,9 @@ pub fn main() !void {
     // What the difference between child traceme and attaching from parent? Which is better? Could not get parent attach to work.
     //_ = linux.ptrace(linux.PTRACE.ATTACH, pid, 0, 0, 0);
 
-    var wait = std.posix.waitpid(pid, 0);
-    if (!std.posix.W.IFSTOPPED(wait.status)) {
+    var wait_status: c_int = undefined;
+    _ = std.c.waitpid(pid, &wait_status, 0);
+    if (!std.posix.W.IFSTOPPED(@bitCast(wait_status))) {
         return error.UnexpectedState;
     }
     // Required? From Rust lib: /// Stop tracee at next execve call.
@@ -93,8 +99,8 @@ pub fn main() !void {
     std.debug.print("TEST: 0x{x}\n", .{executable_base});
 
     // ELFFFFFFFFFFFFFFFF
-    const file = try std.fs.cwd().openFile(binary_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, binary_path, .{});
+    defer file.close(io);
 
     _ = c.elf_version(c.EV_CURRENT);
     const elf = c.elf_begin(file.handle, c.ELF_C_READ, null);
@@ -174,8 +180,8 @@ pub fn main() !void {
         //   <51>   DW_AT_external    : 0
         //   <52>   DW_AT_noreturn    : 0
         _ = linux.ptrace(linux.PTRACE.SINGLESTEP, pid, 0, 0, 0);
-        wait = std.posix.waitpid(pid, 0);
-        if (std.posix.W.IFEXITED(wait.status) or std.posix.W.IFSIGNALED(wait.status)) {
+        _ = std.c.waitpid(pid, &wait_status, 0);
+        if (std.posix.W.IFEXITED(@bitCast(wait_status)) or std.posix.W.IFSIGNALED(@bitCast(wait_status))) {
             std.debug.print("Program finished\n", .{});
             return;
         }

@@ -1,10 +1,7 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
 
-pub const c = @cImport({
-    @cInclude("elfutils/libdwfl.h");
-});
-
+pub const c = @import("c");
 
 pub const Registers = struct {
     r15: u64,
@@ -45,7 +42,7 @@ pub fn spawn_child_process(binary_path: []const u8) i32 {
     if (pid == 0) {
         if (std.os.linux.ptrace(std.os.linux.PTRACE.TRACEME, 0, 0, 0, 0) != 0) {
             std.debug.print("ptrace TRACEME failed\n", .{});
-            std.posix.exit(1);
+            std.os.linux.exit(1);
         }
 
         // FIXME: Temp error handling
@@ -56,14 +53,14 @@ pub fn spawn_child_process(binary_path: []const u8) i32 {
             null,
         };
 
-        const res = std.posix.execveZ(
+        const res = std.c.execve(
             argv[0].?,
             &argv,
             &[_:null]?[*:0]const u8{null},
         );
 
         std.debug.print("execve failed: {}\n", .{res});
-        std.posix.exit(1);
+        std.os.linux.exit(1);
     }
     return pid;
 }
@@ -82,8 +79,8 @@ pub fn parse_proc_mappings(
     );
     defer allocator.free(maps_path);
 
-    const file = try std.fs.cwd().openFile(maps_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, maps_path, .{});
+    defer file.close(io);
 
     var buffer: [4098]u8 = undefined;
     var fr = file.reader(io, &buffer);
@@ -151,14 +148,15 @@ pub fn continue_until_breakpoint(pid: i32) !void {
         if (std.posix.errno(rc) != .SUCCESS) {
             return error.ContinueFailed;
         }
-        const wait = std.posix.waitpid(pid, 0);
-        if (std.posix.W.IFSTOPPED(wait.status)) {
-            const sig = std.posix.W.STOPSIG(wait.status);
-            if (sig == @intFromEnum(std.posix.SIG.TRAP)) {
+        var wait_status: c_int = undefined;
+        _ = std.c.waitpid(pid, &wait_status, 0);
+        if (std.posix.W.IFSTOPPED(@bitCast(wait_status))) {
+            const sig = std.posix.W.STOPSIG(@bitCast(wait_status));
+            if (sig == std.posix.SIG.TRAP) {
                 break;
             }
         }
-        if (std.posix.W.IFEXITED(wait.status) or std.posix.W.IFSIGNALED(wait.status)) {
+        if (std.posix.W.IFEXITED(@bitCast(wait_status)) or std.posix.W.IFSIGNALED(@bitCast(wait_status))) {
             return error.FailedToHitBreakpoint;
         }
     }

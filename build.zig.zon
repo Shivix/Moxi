@@ -2,7 +2,7 @@
     .name = .moxi,
     .version = "0.0.0",
     .fingerprint = 0x780b56dd3beb35bf, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0-dev.1484+d0ba6642b",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
