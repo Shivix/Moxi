@@ -80,24 +80,41 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const io = threaded.io();
     const pid = moxi.spawn_child_process(executable_path);
 
-    // What the difference between child traceme and attaching from parent? Which is better? Could not get parent attach to work.
-    //_ = linux.ptrace(linux.PTRACE.ATTACH, pid, 0, 0, 0);
-
     var wait_status: c_int = undefined;
     _ = std.c.waitpid(pid, &wait_status, 0);
     if (!std.posix.W.IFSTOPPED(@bitCast(wait_status))) {
         return error.UnexpectedState;
     }
-    // Required? From Rust lib: /// Stop tracee at next execve call.
+    // Ensures the tracee will stop after exec.
     _ = linux.ptrace(linux.PTRACE.SETOPTIONS, pid, 0, linux.PTRACE.O.TRACEEXEC, 0);
+
+    // Child immediately calls SIGSTOP so the parent can have time to set TRACEEXEC.
+    _ = linux.ptrace(linux.PTRACE.CONT, pid, 0, 0, 0);
+    _ = std.c.waitpid(pid, &wait_status, 0);
+    const exec_status: u32 = @bitCast(wait_status);
+    if (!std.posix.W.IFSTOPPED(exec_status) or
+        std.posix.W.STOPSIG(exec_status) != std.posix.SIG.TRAP)
+    {
+        return error.UnexpectedState;
+    }
 
     var proc_mappings = try moxi.parse_proc_mappings(gpa, io, pid);
     defer proc_mappings.deinit(gpa);
 
-    // ELFFFFFFFFFFFFFFFF
     const file = try std.Io.Dir.cwd().openFile(io, executable_path, .{});
     defer file.close(io);
 
+    var debug_elf = try std.debug.ElfFile.load(
+        gpa,
+        io,
+        file,
+        null,
+        &std.debug.ElfFile.DebugInfoSearchPaths.none,
+    );
+    defer debug_elf.deinit(gpa);
+    if (debug_elf.dwarf == null) return error.MissingDebugInfo;
+    try debug_elf.dwarf.?.open(gpa, debug_elf.endian);
+    try debug_elf.dwarf.?.populateRanges(gpa, debug_elf.endian);
     _ = c.elf_version(c.EV_CURRENT);
     const elf = c.elf_begin(file.handle, c.ELF_C_READ, null);
     if (elf == null) {
@@ -115,18 +132,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
         &ehdr,
         proc_mappings.items,
     );
-    std.debug.print("TEST: 0x{x}\n", .{load_bias});
+    std.debug.print("Load bias: 0x{x}\n", .{load_bias});
+
+    var source_resolver = moxi.SourceResolver{
+        .allocator = gpa,
+        .io = io,
+        .dwarf = &debug_elf.dwarf.?,
+        .endian = debug_elf.endian,
+        .load_bias = load_bias,
+    };
+    defer source_resolver.deinit();
 
     std.debug.print("entry point: 0x{x}\n", .{ehdr.e_entry});
     std.debug.print("is PIE: {}\n", .{ehdr.e_type == c.ET_DYN});
-
-    //var buffer: [4098]u8 = undefined;
-    //var fr = file.reader(io, &buffer);
-    //const reader = &fr.interface;
-
-    //var header = try std.elf.Header.read(reader);
-
-    //var it = header.iterateSectionHeaders(&fr);
 
     const callbacks = c.Dwfl_Callbacks{
         .find_elf = c.dwfl_linux_proc_find_elf,
@@ -144,93 +162,37 @@ pub fn main(init: std.process.Init.Minimal) !void {
     _ = c.dwfl_linux_proc_report(dwfl, pid);
     _ = c.dwfl_report_end(dwfl, null, null);
 
-    // TODO: This is the address of the very start of main. We should put breakpoint after prologue.
-    //
-    //Reading symbols from zig-out/bin/zig_helloworld...
-    //(gdb) start
-    //Temporary breakpoint 1 at 0x1154458: file main.zig, line 5.
-    //Starting program: /home/shivix/PersonalProjects/Zig/moxi/zig-out/bin/zig_helloworld
-    //
-    //Temporary breakpoint 1, main.main () at main.zig:5
-    //5    const hello = "hello";
-    //(gdb) dis
-    //(gdb) disassemble
-    //Dump of assembler code for function main.main:
-    //   0x0000000001154450 <+0>:    push   %rbp
-    //   0x0000000001154451 <+1>:    mov    %rsp,%rbp
-    //   0x0000000001154454 <+4>:    sub    $0x30,%rsp
-    //=> 0x0000000001154458 <+8>:    mov    $0x11a503d,%rax
     const runtime_entry = load_bias + ehdr.e_entry;
-    const main_addr = try moxi.get_main_address(dwfl, runtime_entry, load_bias);
+    const main_function = try moxi.get_main_address(dwfl, runtime_entry);
 
-    const main_instr = try moxi.set_breakpoint(pid, main_addr);
+    const main_instr = try moxi.set_breakpoint(pid, main_function.address);
     try moxi.continue_until_breakpoint(pid);
-    // If we store breakpoints by address, when we hit a SIGTRAP, we know we hit a bp, so reset the
-    // one for current address. Wait no usually if we hit a breakpoint we want to keep it, so we
-    // should reinstate the instruction, step once, and then set breakpoint again.
-    try moxi.reset_breakpoint(pid, main_addr, main_instr);
+    try moxi.reset_breakpoint(pid, main_function.address, main_instr);
 
-    while (true) {
-        //<2><2d>: Abbrev Number: 16 (DW_TAG_subprogram)
-        //   <2e>   Unknown AT value: 2ccd: <0xb6>
-        //   <32>   DW_AT_decl_line   : 0x1
-        //   <36>   DW_AT_decl_column : 1
-        //   <37>   DW_AT_accessibility: 1 (public)
-        //   <38>   DW_AT_name        : (indirect string, offset: 0x22e39): add
-        //   <3c>   DW_AT_linkage_name: (indirect string, offset: 0x22e3d): root.add
-        //   <40>   DW_AT_type        : <0x508e>
-        //   <44>   DW_AT_low_pc      : 0x1155430
-        //   <4c>   DW_AT_high_pc     : 0x43
-        //   <50>   DW_AT_alignment   : 16
-        //   <51>   DW_AT_external    : 0
-        //   <52>   DW_AT_noreturn    : 0
-        _ = linux.ptrace(linux.PTRACE.SINGLESTEP, pid, 0, 0, 0);
-        _ = std.c.waitpid(pid, &wait_status, 0);
-        if (std.posix.W.IFEXITED(@bitCast(wait_status)) or std.posix.W.IFSIGNALED(@bitCast(wait_status))) {
+    var current_location = moxi.next_source_line(pid, &source_resolver, null, main_function) catch |err| switch (err) {
+        error.ProgramFinished => {
             std.debug.print("Program finished\n", .{});
             return;
-        }
+        },
+        else => return err,
+    };
 
-        var regs: moxi.Registers = undefined;
-        _ = linux.ptrace(linux.PTRACE.GETREGS, pid, 0, @intFromPtr(&regs), 0);
+    while (true) {
+        source_resolver.print(current_location);
 
-        const ip: c.Dwarf_Addr = regs.rip;
-
-        // Based on ChatGPT a module can change between things like lib code etc. Should test.
-        const mod = c.dwfl_addrmodule(dwfl, regs.rip);
-        //std.debug.print("Mod: {any}\n", .{mod});
-        if (mod == null) {
-            std.debug.print("Mod not found for RIP: 0x{x}\n", .{ip});
-            return error.NoModuleFound;
-        }
-
-        const func_name = c.dwfl_module_addrname(mod, ip);
-        if (func_name != null) {
-            //std.debug.print("function: {s}\n", .{func_name});
-        } else {
-            std.debug.print("Mod not found for RIP: 0x{x}\n", .{ip});
-            return error.NoFunctionNameFound;
-        }
-
-        const line = c.dwfl_module_getsrc(mod, ip);
-        //const line = c.dwfl_getsrc(dwfl, ip);
-        if (line != null) {
-            var lineno: c_int = 0;
-            var colno: c_int = 0;
-            const src_info = c.dwfl_lineinfo(
-                line,
-                null,
-                &lineno,
-                &colno,
-                null,
-                null,
-            );
-
-            std.debug.print("0x{x} - {s}:{d}:{d}\n", .{ ip, src_info, lineno, colno });
-        }
+        current_location = moxi.next_source_line(
+            pid,
+            &source_resolver,
+            current_location,
+            main_function,
+        ) catch |err| switch (err) {
+            error.ProgramFinished => {
+                std.debug.print("Program finished\n", .{});
+                return;
+            },
+            else => return err,
+        };
     }
     // TODO: Set up in moxi style, listen etc.
     // Have separate window for running a make file that builds and runs daemon, then in main window can run commands we wanna test.
-    // Maybe create an application specifically for testing? Does a bit of all actions for a certain executable? Goes to main, sets break point,
-    // continues, hits breakpoint, steps, reads source etc. Maybe even have that as a unit test?
 }
